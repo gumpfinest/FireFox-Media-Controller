@@ -1,12 +1,16 @@
+// Stores tracked audible tabs and their latest known media state.
 window.__tabs__ = new Map();
 
+// Calls a named method on every open popup window.
 function applyPopupViews(func, args) {
+  // Broadcast a UI update to every currently opened popup instance.
   const views = browser.extension.getViews({ type: "popup" });
   for (const view of views) {
     view[func].apply(view, args);
   }
 }
 
+// Converts any input to a safe volume in the 0..1 range.
 function normalizeVolume(value) {
   const volume = Number(value);
   if (!Number.isFinite(volume)) {
@@ -15,6 +19,7 @@ function normalizeVolume(value) {
   return Math.max(0, Math.min(1, volume));
 }
 
+// Converts duration values to a non-negative finite number.
 function normalizeDuration(value) {
   const duration = Number(value);
   if (!Number.isFinite(duration) || duration <= 0) {
@@ -23,6 +28,7 @@ function normalizeDuration(value) {
   return duration;
 }
 
+// Converts current time values to a valid position within duration bounds.
 function normalizeCurrentTime(value, duration = 0) {
   const currentTime = Number(value);
   if (!Number.isFinite(currentTime) || currentTime < 0) {
@@ -34,7 +40,9 @@ function normalizeCurrentTime(value, duration = 0) {
   return currentTime;
 }
 
+// Merges partial media updates with previous values into one consistent state object.
 function mergeMediaState(previous, incoming = {}) {
+  // Merge partial event payloads with previous state while preserving valid bounds.
   const base = previous ?? {};
   const duration = normalizeDuration(incoming.duration ?? base.duration);
   return {
@@ -46,7 +54,9 @@ function mergeMediaState(previous, incoming = {}) {
   };
 }
 
+// Executes in-tab code to read the best current media candidate and return its state.
 async function readMediaSnapshot(tid) {
+  // Ask the tab for the most relevant media element and read its current state.
   const [media] = await browser.tabs.executeScript(tid, {
     code: `(() => {
       let $media = document.querySelector("[mcx-media]");
@@ -78,13 +88,17 @@ async function readMediaSnapshot(tid) {
   return media ?? null;
 }
 
+// Progress-only events update the seek slider without recreating full card state.
 const MEDIA_PROGRESS_EVENTS = new Set(["timeupdate", "durationchange", "loadedmetadata", "seeking", "seeked"]);
 
+// Builds the extension-side tab model from browser tab metadata.
 async function init(tab) {
+  // Build metadata used by popup cards (title, icon, thumbnail, accent color).
   if (typeof tab === "number") {
     tab = await browser.tabs.get(tab);
   }
   const url = new URL(tab.url);
+  // Prefer platform-specific artwork when available, otherwise fall back to OpenGraph image.
   const thumbnail = await (async () => {
     if (url.hostname.match(/^(www|music)\.youtube\.com$/)) {
       const vid = tab.url.match(/\/(?:watch\?v=|embed\/|shorts\/)([A-Za-z0-9_-]{11})/)[1];
@@ -96,6 +110,7 @@ async function init(tab) {
       })
     )[0];
   })();
+  // Sample the first pixel of artwork/favicon to derive a card accent color.
   const color = await (async (src) => {
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d");
@@ -123,7 +138,9 @@ async function init(tab) {
   };
 }
 
+// Starts tracking one tab and wires page scripts/state into popup UI.
 async function register(tid) {
+  // Start tracking a tab, inject page scripts, then populate initial media state.
   const tab = await init(tid);
   window.__tabs__.set(tid, tab);
   await browser.browserAction.enable();
@@ -149,7 +166,9 @@ async function register(tid) {
   applyPopupViews("add", [trackedTab]);
 }
 
+// Stops tracking one tab and tears down related UI/listeners.
 async function unregister(tid) {
+  // Stop tracking a tab and notify popup/page scripts to clean up listeners.
   window.__tabs__.delete(tid);
   applyPopupViews("del", [tid]);
   const size = window.__tabs__.size;
@@ -160,16 +179,19 @@ async function unregister(tid) {
   await browser.tabs.sendMessage(tid, "@unhook");
 }
 
+// Toolbar starts disabled until at least one audible tab is tracked.
 browser.browserAction.disable();
 browser.browserAction.setBadgeTextColor({ color: "white" });
 browser.browserAction.setBadgeBackgroundColor({ color: "gray" });
 
+// Restore tracking when background starts and audible tabs already exist.
 browser.tabs.query({ audible: true, status: "complete" }).then(async (tabs) => {
   for (const { id } of tabs) {
     await register(id);
   }
 });
 
+// Track tabs once they become audible.
 browser.tabs.onUpdated.addListener(
   async (tid, { audible }) => {
     if (audible && !window.__tabs__.has(tid)) {
@@ -179,6 +201,7 @@ browser.tabs.onUpdated.addListener(
   { properties: ["audible"] }
 );
 
+// Re-register on navigation so metadata/media references are refreshed.
 browser.tabs.onUpdated.addListener(
   async (tid) => {
     if (window.__tabs__.has(tid)) {
@@ -193,6 +216,7 @@ browser.tabs.onUpdated.addListener(
   { properties: ["url", "status"] }
 );
 
+// Keep popup title in sync with tab title changes.
 browser.tabs.onUpdated.addListener(
   async (tid, { title }) => {
     if (window.__tabs__.has(tid)) {
@@ -203,6 +227,7 @@ browser.tabs.onUpdated.addListener(
   { properties: ["title"] }
 );
 
+// Drop suspended tabs from tracking until they become active/audible again.
 browser.tabs.onUpdated.addListener(
   async (tid, { discarded }) => {
     if (discarded && window.__tabs__.has(tid)) {
@@ -212,13 +237,16 @@ browser.tabs.onUpdated.addListener(
   { properties: ["discarded"] }
 );
 
+// Remove tracking when tab closes.
 browser.tabs.onRemoved.addListener(async (tid) => {
   if (window.__tabs__.has(tid)) {
     await unregister(tid);
   }
 });
 
+// Handles state updates from content scripts and applies the lightest possible popup refresh.
 browser.runtime.onMessage.addListener(async (message, sender) => {
+  // Route page media events into stored state and update popup efficiently.
   const tid = sender.tab.id;
   const tab = window.__tabs__.get(tid);
   if (tab === undefined) {

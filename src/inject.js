@@ -1,4 +1,6 @@
+// Content-script entry point: connects page hook events to background state updates.
 (() => {
+  // Resolve the media element we should track for this page.
   const resolveMedia = () => {
     let $media = document.querySelector("[mcx-media]");
     if ($media === null) {
@@ -15,6 +17,7 @@
     return $media;
   };
 
+  // Push the current media state to background whenever a hook event fires.
   const sendHookState = async () => {
     const $media = resolveMedia();
     if ($media === null) {
@@ -32,6 +35,7 @@
     });
   };
 
+  // Re-inject the page script on each registration, but avoid duplicate nodes/listeners.
   let $script = document.querySelector("script#mcx-inject");
   if ($script === null) {
     window.addEventListener("hook", sendHookState);
