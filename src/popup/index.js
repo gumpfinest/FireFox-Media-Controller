@@ -66,17 +66,41 @@ const escapeHtml = (value) =>
     .replace(/'/g, "&#39;");
 
 const mediaActionScript = (actionCode) => `(() => {
+  const mediaScore = ($media) => {
+    if (!($media instanceof HTMLMediaElement) || $media.ended) {
+      return -1;
+    }
+
+    const rect = $media.getBoundingClientRect();
+    const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+    const playingBoost = $media.paused ? 0 : 1000000;
+    const audibleBoost = $media.muted || $media.volume === 0 ? 0 : 100000;
+    return playingBoost + audibleBoost + area;
+  };
+
+  const setActiveMedia = ($media) => {
+    for (const $tagged of document.querySelectorAll("[mcx-media]")) {
+      if ($tagged !== $media) {
+        $tagged.toggleAttribute("mcx-media", false);
+      }
+    }
+    if ($media.getAttribute("mcx-media") === null) {
+      $media.toggleAttribute("mcx-media", true);
+    }
+  };
+
   const ensureMedia = () => {
     let $media = window.$media || document.querySelector("[mcx-media]");
-    if (!$media) {
+    if (!$media || !document.contains($media) || $media.ended) {
       const $allMedia = Array.from(document.querySelectorAll("video, audio"));
-      $media = $allMedia.find(($item) => !$item.paused) || $allMedia[0] || null;
+      $media = $allMedia.sort(($a, $b) => mediaScore($b) - mediaScore($a))[0] || null;
     }
     if ($media === null) {
       return null;
     }
-    if ($media.getAttribute("mcx-media") === null) {
-      $media.toggleAttribute("mcx-media", true);
+    setActiveMedia($media);
+
+    if (!window.$media || window.$media !== $media) {
       void browser.runtime.sendMessage({
         type: "@hook",
         media: {

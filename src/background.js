@@ -1,4 +1,4 @@
-// Stores tracked audible tabs and their latest known media state.
+// Stores tracked tabs and their latest known media state.
 window.__tabs__ = new Map();
 
 // Calls a named method on every open popup window.
@@ -88,6 +88,15 @@ async function readMediaSnapshot(tid) {
   return media ?? null;
 }
 
+// Tries to inject probe scripts into one tab; restricted pages are skipped silently.
+async function injectProbeScript(tid) {
+  try {
+    await browser.tabs.executeScript(tid, { file: "inject.js" });
+  } catch {
+    // Some browser pages (about:, addons, etc.) reject script injection.
+  }
+}
+
 // Progress-only events update the seek slider without recreating full card state.
 const MEDIA_PROGRESS_EVENTS = new Set(["timeupdate", "durationchange", "loadedmetadata", "seeking", "seeked"]);
 
@@ -141,13 +150,17 @@ async function init(tab) {
 // Starts tracking one tab and wires page scripts/state into popup UI.
 async function register(tid) {
   // Start tracking a tab, inject page scripts, then populate initial media state.
+  if (window.__tabs__.has(tid)) {
+    return;
+  }
+
   const tab = await init(tid);
   window.__tabs__.set(tid, tab);
   await browser.browserAction.enable();
   await browser.browserAction.setBadgeText({
     text: String(window.__tabs__.size),
   });
-  await browser.tabs.executeScript(tid, { file: "inject.js" });
+  await injectProbeScript(tid);
 
   const trackedTab = window.__tabs__.get(tid);
   if (trackedTab === undefined) {
@@ -176,44 +189,37 @@ async function unregister(tid) {
   await browser.browserAction.setBadgeText({
     text: size > 0 ? String(size) : null,
   });
-  await browser.tabs.sendMessage(tid, "@unhook");
+  try {
+    await browser.tabs.sendMessage(tid, "@unhook");
+  } catch {
+    // Tab may be gone or have no listener anymore.
+  }
 }
 
-// Toolbar starts disabled until at least one audible tab is tracked.
+// Toolbar starts disabled until at least one media tab is tracked.
 browser.browserAction.disable();
 browser.browserAction.setBadgeTextColor({ color: "white" });
 browser.browserAction.setBadgeBackgroundColor({ color: "gray" });
 
-// Restore tracking when background starts and audible tabs already exist.
-browser.tabs.query({ audible: true, status: "complete" }).then(async (tabs) => {
+// Probe existing completed tabs on startup; tabs register themselves via @hook messages.
+browser.tabs.query({ status: "complete" }).then(async (tabs) => {
   for (const { id } of tabs) {
-    await register(id);
+    await injectProbeScript(id);
   }
 });
 
-// Track tabs once they become audible.
+// Probe each tab once it finishes navigation.
 browser.tabs.onUpdated.addListener(
-  async (tid, { audible }) => {
-    if (audible && !window.__tabs__.has(tid)) {
-      await register(tid);
-    }
-  },
-  { properties: ["audible"] }
-);
-
-// Re-register on navigation so metadata/media references are refreshed.
-browser.tabs.onUpdated.addListener(
-  async (tid) => {
-    if (window.__tabs__.has(tid)) {
+  async (tid, changeInfo) => {
+    if (changeInfo.status === "loading" && window.__tabs__.has(tid)) {
       await unregister(tid);
-      await new Promise((r) => setTimeout(r, 4500));
-      const tab = await browser.tabs.get(tid);
-      if (tab.audible) {
-        await register(tid);
-      }
+    }
+
+    if (changeInfo.status === "complete") {
+      await injectProbeScript(tid);
     }
   },
-  { properties: ["url", "status"] }
+  { properties: ["status"] }
 );
 
 // Keep popup title in sync with tab title changes.
@@ -227,7 +233,7 @@ browser.tabs.onUpdated.addListener(
   { properties: ["title"] }
 );
 
-// Drop suspended tabs from tracking until they become active/audible again.
+// Drop suspended tabs from tracking until they are resumed and probed again.
 browser.tabs.onUpdated.addListener(
   async (tid, { discarded }) => {
     if (discarded && window.__tabs__.has(tid)) {
@@ -247,7 +253,15 @@ browser.tabs.onRemoved.addListener(async (tid) => {
 // Handles state updates from content scripts and applies the lightest possible popup refresh.
 browser.runtime.onMessage.addListener(async (message, sender) => {
   // Route page media events into stored state and update popup efficiently.
-  const tid = sender.tab.id;
+  const tid = sender.tab?.id;
+  if (typeof tid !== "number") {
+    return;
+  }
+
+  if (message.type === "@hook" && !window.__tabs__.has(tid)) {
+    await register(tid);
+  }
+
   const tab = window.__tabs__.get(tid);
   if (tab === undefined) {
     return;
