@@ -59,16 +59,26 @@ function mergeMediaState(previous, incoming = {}) {
 // Executes in-tab code to read the best current media candidate and return its state.
 async function readMediaSnapshot(tid) {
   // Ask the tab for the most relevant media element and read its current state.
-  const [media] = await browser.tabs.executeScript(tid, {
+  const frameSnapshots = await browser.tabs.executeScript(tid, {
+    allFrames: true,
+    matchAboutBlank: true,
     code: `(() => {
+      const mediaScore = ($media) => {
+        if (!($media instanceof HTMLMediaElement) || $media.ended) {
+          return -1;
+        }
+
+        const rect = $media.getBoundingClientRect();
+        const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+        const playingBoost = $media.paused ? 0 : 1000000;
+        const audibleBoost = $media.muted || $media.volume === 0 ? 0 : 100000;
+        return playingBoost + audibleBoost + area;
+      };
+
       let $media = document.querySelector("[mcx-media]");
       if ($media === null) {
         const $allMedia = Array.from(document.querySelectorAll("video, audio"));
-        $media =
-          $allMedia.find(($item) => !$item.paused && !$item.ended) ||
-          $allMedia.find(($item) => !$item.ended) ||
-          $allMedia[0] ||
-          null;
+        $media = $allMedia.sort(($a, $b) => mediaScore($b) - mediaScore($a))[0] || null;
         if ($media !== null && $media.getAttribute("mcx-media") === null) {
           $media.toggleAttribute("mcx-media", true);
         }
@@ -79,23 +89,40 @@ async function readMediaSnapshot(tid) {
       }
 
       return {
-        paused: $media.paused,
-        muted: $media.muted,
-        volume: $media.volume,
-        currentTime: $media.currentTime,
-        duration: $media.duration,
+        score: mediaScore($media),
+        media: {
+          paused: $media.paused,
+          muted: $media.muted,
+          volume: $media.volume,
+          currentTime: $media.currentTime,
+          duration: $media.duration,
+        },
       };
     })();`,
   });
-  return media ?? null;
+
+  const bestSnapshot = frameSnapshots
+    .filter((snapshot) => snapshot !== null)
+    .sort((a, b) => b.score - a.score)[0];
+
+  return bestSnapshot?.media ?? null;
 }
 
 // Tries to inject probe scripts into one tab; restricted pages are skipped silently.
 async function injectProbeScript(tid) {
   try {
-    await browser.tabs.executeScript(tid, { file: "inject.js" });
+    await browser.tabs.executeScript(tid, {
+      file: "inject.js",
+      allFrames: true,
+      matchAboutBlank: true,
+    });
   } catch {
-    // Some browser pages (about:, addons, etc.) reject script injection.
+    // Some browser pages/frames (about:, addons, etc.) reject script injection.
+    try {
+      await browser.tabs.executeScript(tid, { file: "inject.js" });
+    } catch {
+      // Skip restricted tabs that cannot host extension scripts.
+    }
   }
 }
 
@@ -141,6 +168,7 @@ async function init(tab) {
     id: tab.id,
     wid: tab.windowId,
     media: null,
+    frameId: 0,
     title: tab.title,
     favicon: tab.favIconUrl,
     hostname: url.hostname,
@@ -159,6 +187,7 @@ async function refreshTrackedTabMetadata(tid) {
   try {
     const refreshedTab = await init(tid);
     refreshedTab.media = trackedTab.media;
+    refreshedTab.frameId = trackedTab.frameId ?? 0;
     window.__tabs__.set(tid, refreshedTab);
     applyPopupViews("update", [refreshedTab]);
   } catch (error) {
@@ -305,6 +334,7 @@ browser.tabs.onRemoved.addListener(async (tid) => {
 browser.runtime.onMessage.addListener(async (message, sender) => {
   // Route page media events into stored state and update popup efficiently.
   const tid = sender.tab?.id;
+  const frameId = Number.isInteger(sender.frameId) ? sender.frameId : 0;
   if (typeof tid !== "number") {
     return;
   }
@@ -319,17 +349,25 @@ browser.runtime.onMessage.addListener(async (message, sender) => {
   }
 
   if (message.type === "@hook") {
+    tab.frameId = frameId;
     tab.media = mergeMediaState(tab.media, message.media);
-    await browser.tabs.executeScript(tid, { file: "hook.js" });
+    try {
+      await browser.tabs.executeScript(tid, { file: "hook.js", frameId, matchAboutBlank: true });
+    } catch {
+      // Frame may no longer exist after in-page player navigation.
+    }
     applyPopupViews("update", [tab]);
   } else if (message.type === "play" || message.type === "pause") {
+    tab.frameId = frameId;
     const paused = message.type === "play" ? false : true;
     tab.media = mergeMediaState(tab.media, { ...message, paused });
     applyPopupViews("update", [tab]);
   } else if (message.type === "volumechange") {
+    tab.frameId = frameId;
     tab.media = mergeMediaState(tab.media, message);
     applyPopupViews("syncVolume", [tid, tab.media]);
   } else if (MEDIA_PROGRESS_EVENTS.has(message.type)) {
+    tab.frameId = frameId;
     tab.media = mergeMediaState(tab.media, message);
     applyPopupViews("syncProgress", [tid, tab.media]);
   } else return;

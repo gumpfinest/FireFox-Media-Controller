@@ -124,6 +124,32 @@ const mediaActionScript = (actionCode) => `(() => {
   ${actionCode}
 })();`;
 
+const runMediaAction = async (tab, actionCode) => {
+  const code = mediaActionScript(actionCode);
+  const frameId = Number.isInteger(tab.frameId) ? tab.frameId : 0;
+
+  try {
+    await browser.tabs.executeScript(tab.id, {
+      code,
+      frameId,
+      matchAboutBlank: true,
+    });
+    return;
+  } catch {
+    // Fallback to all frames for sites that move players between frames.
+  }
+
+  try {
+    await browser.tabs.executeScript(tab.id, {
+      code,
+      allFrames: true,
+      matchAboutBlank: true,
+    });
+  } catch {
+    // Ignore if script injection is blocked in this tab.
+  }
+};
+
 const $tab = (tab) => {
   const $ = document.createElement("div");
   $.className = "tab";
@@ -211,18 +237,20 @@ const $tab = (tab) => {
   $.querySelector("div.tab-meta-info-title").onclick = focusTab;
   $.querySelector("div.tab-meta-info-subtitle").onclick = focusTab;
   $.querySelector("button.control-playpause").onclick = () =>
-    browser.tabs.executeScript(tab.id, {
-      code: mediaActionScript(`
+    void runMediaAction(
+      tab,
+      `
         if ($media.paused) {
           $media.play();
         } else {
           $media.pause();
         }
-      `),
-    });
+      `
+    );
   $.querySelector("button.control-previous").onclick = () => {
-    browser.tabs.executeScript(tab.id, {
-      code: mediaActionScript(`
+    void runMediaAction(
+      tab,
+      `
         const canUse = ($button) =>
           $button !== null &&
           $button !== undefined &&
@@ -265,36 +293,39 @@ const $tab = (tab) => {
           document.dispatchEvent(new KeyboardEvent("keydown", { ...eventInit, key: "P", code: "KeyP", shiftKey: true }));
           document.dispatchEvent(new KeyboardEvent("keyup", { ...eventInit, key: "P", code: "KeyP", shiftKey: true }));
         }
-      `),
-    });
+      `
+    );
   };
   $.querySelector("button.control-seekback10").onclick = () => {
-    browser.tabs.executeScript(tab.id, {
-      code: mediaActionScript(`
+    void runMediaAction(
+      tab,
+      `
         const nextTime = Math.max($media.currentTime - 10, 0);
         if (typeof $media.fastSeek === "function") {
           $media.fastSeek(nextTime);
         } else {
           $media.currentTime = nextTime;
         }
-      `),
-    });
+      `
+    );
   };
   $.querySelector("button.control-seekforward10").onclick = () => {
-    browser.tabs.executeScript(tab.id, {
-      code: mediaActionScript(`
+    void runMediaAction(
+      tab,
+      `
         const nextTime = $media.currentTime + 10;
         if (typeof $media.fastSeek === "function") {
           $media.fastSeek(nextTime);
         } else {
           $media.currentTime = nextTime;
         }
-      `),
-    });
+      `
+    );
   };
   $.querySelector("button.control-next").onclick = () => {
-    browser.tabs.executeScript(tab.id, {
-      code: mediaActionScript(`
+    void runMediaAction(
+      tab,
+      `
         const canUse = ($button) =>
           $button !== null &&
           $button !== undefined &&
@@ -332,21 +363,23 @@ const $tab = (tab) => {
           document.dispatchEvent(new KeyboardEvent("keydown", { ...eventInit, key: "N", code: "KeyN", shiftKey: true }));
           document.dispatchEvent(new KeyboardEvent("keyup", { ...eventInit, key: "N", code: "KeyN", shiftKey: true }));
         }
-      `),
-    });
+      `
+    );
   };
   $.querySelector("button.control-mute").onclick = () => {
-    browser.tabs.executeScript(tab.id, {
-      code: mediaActionScript(`
+    void runMediaAction(
+      tab,
+      `
         $media.muted = !$media.muted;
-      `),
-    });
+      `
+    );
   };
   $.querySelector("input.control-progress").oninput = (event) => {
     const max = clampDuration(event.target.max);
     const nextTime = clampCurrentTime(event.target.value, max);
-    browser.tabs.executeScript(tab.id, {
-      code: mediaActionScript(`
+    void runMediaAction(
+      tab,
+      `
         const duration = Number.isFinite($media.duration) && $media.duration > 0 ? $media.duration : ${max || 0};
         const current = Math.max(0, Math.min(${nextTime}, duration || ${nextTime}));
         if (typeof $media.fastSeek === "function") {
@@ -354,19 +387,20 @@ const $tab = (tab) => {
         } else {
           $media.currentTime = current;
         }
-      `),
-    });
+      `
+    );
   };
   $.querySelector("input.control-volume").oninput = (event) => {
     const volume = clampVolume(event.target.value);
-    browser.tabs.executeScript(tab.id, {
-      code: mediaActionScript(`
+    void runMediaAction(
+      tab,
+      `
         $media.volume = ${volume};
         if ($media.muted && ${volume} > 0) {
           $media.muted = false;
         }
-      `),
-    });
+      `
+    );
   };
   return $;
 };
