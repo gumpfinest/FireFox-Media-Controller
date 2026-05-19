@@ -28,7 +28,7 @@
         "size": 128
       }
     ],
-    "default_title": "Media Controller",
+    "default_title": "Media Controller Manager",
     "default_popup": "popup/index.html"
   },
   "permissions": [
