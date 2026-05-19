@@ -1,5 +1,7 @@
 // Stores tracked tabs and their latest known media state.
 window.__tabs__ = new Map();
+// Debounces repeated metadata refresh requests for the same tab.
+window.__metadataRefreshTimers__ = new Map();
 
 // Calls a named method on every open popup window.
 function applyPopupViews(func, args) {
@@ -147,6 +149,38 @@ async function init(tab) {
   };
 }
 
+// Rebuilds display metadata (title/favicon/thumbnail/color) while keeping media state.
+async function refreshTrackedTabMetadata(tid) {
+  const trackedTab = window.__tabs__.get(tid);
+  if (trackedTab === undefined) {
+    return;
+  }
+
+  try {
+    const refreshedTab = await init(tid);
+    refreshedTab.media = trackedTab.media;
+    window.__tabs__.set(tid, refreshedTab);
+    applyPopupViews("update", [refreshedTab]);
+  } catch (error) {
+    console.warn("Unable to refresh tab metadata", error);
+  }
+}
+
+// Schedules a metadata refresh so SPA/title churn does not spam tab scripts.
+function queueMetadataRefresh(tid, delay = 250) {
+  const previousTimer = window.__metadataRefreshTimers__.get(tid);
+  if (previousTimer !== undefined) {
+    clearTimeout(previousTimer);
+  }
+
+  const timer = setTimeout(() => {
+    window.__metadataRefreshTimers__.delete(tid);
+    void refreshTrackedTabMetadata(tid);
+  }, delay);
+
+  window.__metadataRefreshTimers__.set(tid, timer);
+}
+
 // Starts tracking one tab and wires page scripts/state into popup UI.
 async function register(tid) {
   // Start tracking a tab, inject page scripts, then populate initial media state.
@@ -182,6 +216,12 @@ async function register(tid) {
 // Stops tracking one tab and tears down related UI/listeners.
 async function unregister(tid) {
   // Stop tracking a tab and notify popup/page scripts to clean up listeners.
+  const refreshTimer = window.__metadataRefreshTimers__.get(tid);
+  if (refreshTimer !== undefined) {
+    clearTimeout(refreshTimer);
+    window.__metadataRefreshTimers__.delete(tid);
+  }
+
   window.__tabs__.delete(tid);
   applyPopupViews("del", [tid]);
   const size = window.__tabs__.size;
@@ -222,12 +262,23 @@ browser.tabs.onUpdated.addListener(
   { properties: ["status"] }
 );
 
+// Refresh popup media card visuals when SPA navigation changes tab URL.
+browser.tabs.onUpdated.addListener(
+  async (tid, { url }) => {
+    if (url !== undefined && window.__tabs__.has(tid)) {
+      queueMetadataRefresh(tid, 200);
+    }
+  },
+  { properties: ["url"] }
+);
+
 // Keep popup title in sync with tab title changes.
 browser.tabs.onUpdated.addListener(
   async (tid, { title }) => {
     if (window.__tabs__.has(tid)) {
       window.__tabs__.get(tid).title = title;
       applyPopupViews("update", [window.__tabs__.get(tid)]);
+      queueMetadataRefresh(tid, 400);
     }
   },
   { properties: ["title"] }
