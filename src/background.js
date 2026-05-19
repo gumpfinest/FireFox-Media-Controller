@@ -7,6 +7,47 @@ function applyPopupViews(func, args) {
   }
 }
 
+function normalizeVolume(value) {
+  const volume = Number(value);
+  if (!Number.isFinite(volume)) {
+    return 1;
+  }
+  return Math.max(0, Math.min(1, volume));
+}
+
+function normalizeDuration(value) {
+  const duration = Number(value);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return 0;
+  }
+  return duration;
+}
+
+function normalizeCurrentTime(value, duration = 0) {
+  const currentTime = Number(value);
+  if (!Number.isFinite(currentTime) || currentTime < 0) {
+    return 0;
+  }
+  if (duration > 0) {
+    return Math.min(currentTime, duration);
+  }
+  return currentTime;
+}
+
+function mergeMediaState(previous, incoming = {}) {
+  const base = previous ?? {};
+  const duration = normalizeDuration(incoming.duration ?? base.duration);
+  return {
+    paused: Boolean(incoming.paused ?? base.paused ?? true),
+    muted: Boolean(incoming.muted ?? base.muted ?? false),
+    volume: normalizeVolume(incoming.volume ?? base.volume),
+    duration,
+    currentTime: normalizeCurrentTime(incoming.currentTime ?? base.currentTime, duration),
+  };
+}
+
+const MEDIA_PROGRESS_EVENTS = new Set(["timeupdate", "durationchange", "loadedmetadata", "seeking", "seeked"]);
+
 async function init(tab) {
   if (typeof tab === "number") {
     tab = await browser.tabs.get(tab);
@@ -132,15 +173,23 @@ browser.tabs.onRemoved.addListener(async (tid) => {
 browser.runtime.onMessage.addListener(async (message, sender) => {
   const tid = sender.tab.id;
   const tab = window.__tabs__.get(tid);
+  if (tab === undefined) {
+    return;
+  }
+
   if (message.type === "@hook") {
-    tab.media = message.media;
+    tab.media = mergeMediaState(tab.media, message.media);
     await browser.tabs.executeScript(tid, { file: "hook.js" });
-  } else if (message.type === "play") {
-    tab.media.paused = false;
-  } else if (message.type === "pause") {
-    tab.media.paused = true;
+    applyPopupViews("update", [tab]);
+  } else if (message.type === "play" || message.type === "pause") {
+    const paused = message.type === "play" ? false : true;
+    tab.media = mergeMediaState(tab.media, { ...message, paused });
+    applyPopupViews("update", [tab]);
   } else if (message.type === "volumechange") {
-    tab.media.muted = message.volume === null;
+    tab.media = mergeMediaState(tab.media, message);
+    applyPopupViews("syncVolume", [tid, tab.media]);
+  } else if (MEDIA_PROGRESS_EVENTS.has(message.type)) {
+    tab.media = mergeMediaState(tab.media, message);
+    applyPopupViews("syncProgress", [tid, tab.media]);
   } else return;
-  applyPopupViews("update", [tab]);
 });

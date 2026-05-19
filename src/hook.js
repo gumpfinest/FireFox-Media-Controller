@@ -1,13 +1,17 @@
 (() => {
   if (window.listeners === undefined) {
     window.listeners = {};
-    ["play", "pause", "volumechange"].forEach((type) => {
+    ["play", "pause", "volumechange", "timeupdate", "durationchange", "loadedmetadata", "seeking", "seeked"].forEach((type) => {
       if (!(type in window.listeners))
         window.listeners[type] = async () => {
-          const message = { type };
-          if (type === "volumechange") {
-            message.volume = window.$media.muted ? null : window.$media.volume;
-          }
+          const message = {
+            type,
+            paused: window.$media.paused,
+            muted: window.$media.muted,
+            volume: window.$media.volume,
+            currentTime: window.$media.currentTime,
+            duration: window.$media.duration,
+          };
           await browser.runtime.sendMessage(message);
         };
     });
