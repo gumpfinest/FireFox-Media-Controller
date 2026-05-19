@@ -37,7 +37,12 @@
   ],
   "browser_specific_settings": {
     "gecko": {
-      "id": "media-controller.extension@tnychn"
+      "id": "media-controller-manager@gumpfinest.dev",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
     }
   }
 }
