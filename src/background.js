@@ -46,6 +46,38 @@ function mergeMediaState(previous, incoming = {}) {
   };
 }
 
+async function readMediaSnapshot(tid) {
+  const [media] = await browser.tabs.executeScript(tid, {
+    code: `(() => {
+      let $media = document.querySelector("[mcx-media]");
+      if ($media === null) {
+        const $allMedia = Array.from(document.querySelectorAll("video, audio"));
+        $media =
+          $allMedia.find(($item) => !$item.paused && !$item.ended) ||
+          $allMedia.find(($item) => !$item.ended) ||
+          $allMedia[0] ||
+          null;
+        if ($media !== null && $media.getAttribute("mcx-media") === null) {
+          $media.toggleAttribute("mcx-media", true);
+        }
+      }
+
+      if ($media === null) {
+        return null;
+      }
+
+      return {
+        paused: $media.paused,
+        muted: $media.muted,
+        volume: $media.volume,
+        currentTime: $media.currentTime,
+        duration: $media.duration,
+      };
+    })();`,
+  });
+  return media ?? null;
+}
+
 const MEDIA_PROGRESS_EVENTS = new Set(["timeupdate", "durationchange", "loadedmetadata", "seeking", "seeked"]);
 
 async function init(tab) {
@@ -92,13 +124,29 @@ async function init(tab) {
 }
 
 async function register(tid) {
-  window.__tabs__.set(tid, await init(tid));
-  applyPopupViews("add", [window.__tabs__.get(tid)]);
+  const tab = await init(tid);
+  window.__tabs__.set(tid, tab);
   await browser.browserAction.enable();
   await browser.browserAction.setBadgeText({
     text: String(window.__tabs__.size),
   });
   await browser.tabs.executeScript(tid, { file: "inject.js" });
+
+  const trackedTab = window.__tabs__.get(tid);
+  if (trackedTab === undefined) {
+    return;
+  }
+
+  try {
+    const media = await readMediaSnapshot(tid);
+    if (media !== null) {
+      trackedTab.media = mergeMediaState(trackedTab.media, media);
+    }
+  } catch (error) {
+    console.warn("Unable to read initial media snapshot", error);
+  }
+
+  applyPopupViews("add", [trackedTab]);
 }
 
 async function unregister(tid) {

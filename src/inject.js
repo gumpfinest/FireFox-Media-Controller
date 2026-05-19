@@ -1,6 +1,22 @@
 (() => {
+  const resolveMedia = () => {
+    let $media = document.querySelector("[mcx-media]");
+    if ($media === null) {
+      const $allMedia = Array.from(document.querySelectorAll("video, audio"));
+      $media =
+        $allMedia.find(($item) => !$item.paused && !$item.ended) ||
+        $allMedia.find(($item) => !$item.ended) ||
+        $allMedia[0] ||
+        null;
+      if ($media !== null && $media.getAttribute("mcx-media") === null) {
+        $media.toggleAttribute("mcx-media", true);
+      }
+    }
+    return $media;
+  };
+
   const sendHookState = async () => {
-    const $media = document.querySelector("[mcx-media]");
+    const $media = resolveMedia();
     if ($media === null) {
       return;
     }
